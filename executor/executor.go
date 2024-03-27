@@ -13,22 +13,16 @@ import (
 )
 
 type Input struct {
-	If struct {
-		Condition string `json:"condition" validate:"required,javascript"`
-		Trigger   string `json:"trigger" validate:"required,alphanum"`
-	} `json:"if" validate:"required"`
-	Else struct {
-		Trigger string `json:"trigger" validate:"required,alphanum"`
-	} `json:"else" validate:"required"`
+	Source string `json:"source" validate:"required,javascript"`
 }
 
 type Output struct {
-	Next string `json:"next" validate:"required,alphanum"`
+	Return interface{} `json:"return"`
 }
 
 type JavascriptExecutor struct {
-	validator  *validate.Validate
-	inputCache *Input // to prevent converting if already done
+	validator   *validate.Validate
+	cachedInput *Input
 }
 
 // NewJavascriptExecutor creates a new JavascriptExecutor
@@ -43,11 +37,11 @@ func (e *JavascriptExecutor) New() types.Executor {
 }
 
 func (e *JavascriptExecutor) ID() string {
-	return "if"
+	return "javascript"
 }
 
 func (e *JavascriptExecutor) Name() string {
-	return "If"
+	return "Javascript"
 }
 
 func (e *JavascriptExecutor) InputRules() map[string]interface{} {
@@ -59,37 +53,28 @@ func (e *JavascriptExecutor) OutputRules() map[string]interface{} {
 }
 
 func (e *JavascriptExecutor) Description() string {
-	return "If executor performs a comparison based on the input and decides the next task to execute."
+	return "Javascript executor that can execute javascript code. The input must be a string containing valid javascript code. The output will be the result of the javascript code."
 }
 
-func (e *JavascriptExecutor) convertInput(input interface{}) (*Input, error) {
-	if e.inputCache != nil {
-		return e.inputCache, nil
+func (e *JavascriptExecutor) converInput(input interface{}) (*Input, error) {
+	if e.cachedInput != nil {
+		return e.cachedInput, nil
 	}
 
-	e.inputCache = &Input{}
-	if err := utils.ConvertToStruct(input, e.inputCache); err != nil {
-		return nil, stacktrace.PropagateWithCode(err, types.ErrInvalidTask, "Error converting input to struct")
+	e.cachedInput = &Input{}
+	if err := utils.ConvertToStruct(input, e.cachedInput); err != nil {
+		return nil, stacktrace.Propagate(err, "Error converting input to struct")
 	}
-	return e.inputCache, nil
-}
-
-func getTaskById(id string, tasks []*types.Task) *types.Task {
-	for _, t := range tasks {
-		if t.ID == id {
-			return t
-		}
-	}
-	return nil
+	return e.cachedInput, nil
 }
 
 func (e *JavascriptExecutor) Validate(ctx context.Context, task *types.Task, otherTasks []*types.Task) error {
 	if task.Input == nil {
 		return stacktrace.NewErrorWithCode(types.ErrInvalidInput, "Input is required")
 	}
-	// Make sure the input is a string
-	if _, ok := task.Input.(string); !ok {
-		return stacktrace.NewErrorWithCode(types.ErrInvalidInput, "Input must be a string")
+
+	if _, err := e.converInput(task.Input); err != nil {
+		return stacktrace.PropagateWithCode(err, types.ErrInvalidInput, "Error converting input to struct")
 	}
 	return nil
 }
@@ -97,23 +82,27 @@ func (e *JavascriptExecutor) Validate(ctx context.Context, task *types.Task, oth
 func (e *JavascriptExecutor) Execute(ctx context.Context, task *types.Task, otherTasks []*types.Task) (interface{}, error) {
 	logrus.Debugf("Executing task %s in a javascript executor", task.ID)
 
-	// Ensure task input is a string
-	input, ok := task.Input.(string)
-	if !ok {
+	input, err := e.converInput(task.Input)
+	if err != nil {
+		return nil, stacktrace.Propagate(err, "Error converting input to struct")
+	}
+
+	// Ensure task input is not an empty string
+	if input.Source == "" {
 		return nil, stacktrace.NewErrorWithCode(types.ErrInvalidInput, "Expected input to be a string")
 	}
 
-	var err error
 	//Check if the input contains template tags
-	if strings.Contains(input, "{{") {
-		input, err = utils.RenderInputTemplate(input, task, otherTasks)
+	source := input.Source
+	if strings.Contains(input.Source, "{{") {
+		source, err = utils.RenderInputTemplate(input.Source, task, otherTasks)
 		if err != nil {
 			return nil, stacktrace.Propagate(err, "Error rendering input template")
 		}
 	}
 
 	// We need to automatically wrap the input in a function so that we can return a value
-	input = "function main() { return " + input + " }; var output = main(); output;"
+	source = "function main() { return " + input.Source + " }; var output = main(); output;"
 
 	vm := otto.New()
 	// Add task output from dependencies of this task to the VM.
@@ -126,7 +115,7 @@ func (e *JavascriptExecutor) Execute(ctx context.Context, task *types.Task, othe
 		vm.Set("input", task.GlobalInput)
 	}
 
-	out, err := vm.Run(input)
+	out, err := vm.Run(source)
 	if err != nil {
 		return nil, stacktrace.NewErrorWithCode(types.ErrExecutorFailed, "Error executing javascript: %v", err)
 	}
