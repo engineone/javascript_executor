@@ -9,9 +9,9 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-func TestEngine(t *testing.T) {
+func TestExecutor(t *testing.T) {
 	RegisterFailHandler(Fail)
-	RunSpecs(t, "If Executor Suite")
+	RunSpecs(t, "Javascript Executor Suite")
 }
 
 func init() {

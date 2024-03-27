@@ -2,7 +2,6 @@ package executor
 
 import (
 	"context"
-	"reflect"
 	"strings"
 
 	"github.com/engineone/types"
@@ -10,7 +9,6 @@ import (
 	validate "github.com/go-playground/validator/v10"
 	"github.com/palantir/stacktrace"
 	"github.com/robertkrimen/otto"
-	"github.com/robertkrimen/otto/parser"
 	"github.com/sirupsen/logrus"
 )
 
@@ -28,43 +26,43 @@ type Output struct {
 	Next string `json:"next" validate:"required,alphanum"`
 }
 
-type IfExecutor struct {
+type JavascriptExecutor struct {
 	validator  *validate.Validate
 	inputCache *Input // to prevent converting if already done
 }
 
-// NewIfExecutor creates a new IfExecutor
-func NewIfExecutor() *IfExecutor {
-	return &IfExecutor{
+// NewJavascriptExecutor creates a new JavascriptExecutor
+func NewJavascriptExecutor() *JavascriptExecutor {
+	return &JavascriptExecutor{
 		validator: utils.NewValidator(),
 	}
 }
 
-func (e *IfExecutor) New() types.Executor {
-	return NewIfExecutor()
+func (e *JavascriptExecutor) New() types.Executor {
+	return NewJavascriptExecutor()
 }
 
-func (e *IfExecutor) ID() string {
+func (e *JavascriptExecutor) ID() string {
 	return "if"
 }
 
-func (e *IfExecutor) Name() string {
+func (e *JavascriptExecutor) Name() string {
 	return "If"
 }
 
-func (e *IfExecutor) InputRules() map[string]interface{} {
+func (e *JavascriptExecutor) InputRules() map[string]interface{} {
 	return utils.ExtractValidationRules(&Input{})
 }
 
-func (e *IfExecutor) OutputRules() map[string]interface{} {
+func (e *JavascriptExecutor) OutputRules() map[string]interface{} {
 	return utils.ExtractValidationRules(&Output{})
 }
 
-func (e *IfExecutor) Description() string {
+func (e *JavascriptExecutor) Description() string {
 	return "If executor performs a comparison based on the input and decides the next task to execute."
 }
 
-func (e *IfExecutor) convertInput(input interface{}) (*Input, error) {
+func (e *JavascriptExecutor) convertInput(input interface{}) (*Input, error) {
 	if e.inputCache != nil {
 		return e.inputCache, nil
 	}
@@ -85,67 +83,37 @@ func getTaskById(id string, tasks []*types.Task) *types.Task {
 	return nil
 }
 
-func (e *IfExecutor) Validate(ctx context.Context, task *types.Task, otherTasks []*types.Task) error {
-
+func (e *JavascriptExecutor) Validate(ctx context.Context, task *types.Task, otherTasks []*types.Task) error {
 	if task.Input == nil {
-		return stacktrace.NewErrorWithCode(types.ErrInvalidTask, "Input is required")
+		return stacktrace.NewErrorWithCode(types.ErrInvalidInput, "Input is required")
 	}
-
-	if reflect.TypeOf(task.Input).Kind() != reflect.Map {
-		return stacktrace.NewErrorWithCode(types.ErrInvalidTask, "Input must be an object")
-	}
-
-	v := validate.New()
-	err := v.RegisterValidation("javascript", func(fl validate.FieldLevel) bool {
-		_, err := parser.ParseFile(nil, "input", fl.Field().String(), 0)
-		if err != nil {
-			logrus.Errorf("Error validating javascript: %v", err)
-			return false
-		}
-		return true
-	})
-	if err != nil {
-		return stacktrace.Propagate(err, "Error registering javascript validation")
-	}
-
-	input, err := e.convertInput(task.Input)
-	if err != nil {
-		return stacktrace.Propagate(err, "Failed to convert input")
-	}
-
-	if err := v.Struct(input); err != nil {
-		return stacktrace.PropagateWithCode(err, types.ErrInvalidTask, "Input validation failed")
-	}
-
-	if t := getTaskById(input.If.Trigger, otherTasks); t == nil {
-		return stacktrace.NewErrorWithCode(types.ErrInvalidTask, "If trigger %s does not exist in the workflow", input.If.Trigger)
-	}
-	if t := getTaskById(input.Else.Trigger, otherTasks); t == nil {
-		return stacktrace.NewErrorWithCode(types.ErrInvalidTask, "Else trigger %s does not exist in the workflow", input.Else.Trigger)
+	// Make sure the input is a string
+	if _, ok := task.Input.(string); !ok {
+		return stacktrace.NewErrorWithCode(types.ErrInvalidInput, "Input must be a string")
 	}
 	return nil
 }
 
-func (e *IfExecutor) Execute(ctx context.Context, task *types.Task, otherTasks []*types.Task) (interface{}, error) {
-	logrus.Debugf("Executing task %s in an if executor", task.ID)
-	input, err := e.convertInput(task.Input)
-	if err != nil {
-		return nil, stacktrace.Propagate(err, "Failed to convert input")
+func (e *JavascriptExecutor) Execute(ctx context.Context, task *types.Task, otherTasks []*types.Task) (interface{}, error) {
+	logrus.Debugf("Executing task %s in a javascript executor", task.ID)
+
+	// Ensure task input is a string
+	input, ok := task.Input.(string)
+	if !ok {
+		return nil, stacktrace.NewErrorWithCode(types.ErrInvalidInput, "Expected input to be a string")
 	}
 
-	code := "if (" + input.If.Condition + ") { return '" + input.If.Trigger + "' } else { return '" + input.Else.Trigger + "' }"
-	// We need to automatically wrap the input in a function so that we can return a value
-	code = "function main() { " + code + " }; var output = {'next': main()}; output;"
-
-	// Make sure we render template tags in the code
-	// First check if the input contains template tags
-	if strings.Contains(code, "{{") {
-		var err error
-		code, err = utils.RenderInputTemplate(code, task, otherTasks)
+	var err error
+	//Check if the input contains template tags
+	if strings.Contains(input, "{{") {
+		input, err = utils.RenderInputTemplate(input, task, otherTasks)
 		if err != nil {
 			return nil, stacktrace.Propagate(err, "Error rendering input template")
 		}
 	}
+
+	// We need to automatically wrap the input in a function so that we can return a value
+	input = "function main() { return " + input + " }; var output = main(); output;"
 
 	vm := otto.New()
 	// Add task output from dependencies of this task to the VM.
@@ -158,13 +126,23 @@ func (e *IfExecutor) Execute(ctx context.Context, task *types.Task, otherTasks [
 		vm.Set("input", task.GlobalInput)
 	}
 
-	out, err := vm.Run(code)
+	out, err := vm.Run(input)
 	if err != nil {
-		return nil, stacktrace.NewError("Error executing javascript: %v", err)
+		return nil, stacktrace.NewErrorWithCode(types.ErrExecutorFailed, "Error executing javascript: %v", err)
 	}
 
-	if !out.IsObject() {
-		return nil, stacktrace.NewError("Expected output to be an object with a trigger field")
+	if out.IsString() {
+		return out.String(), nil
+	} else if out.IsNumber() {
+		t, err := out.ToInteger()
+		return t, stacktrace.Propagate(err, "Invalid output type is not an integer")
+	} else if out.IsBoolean() {
+		t, err := out.ToBoolean()
+		return t, stacktrace.Propagate(err, "Invalid output type is not a boolean")
+	} else if out.IsUndefined() || out.IsNull() {
+		return nil, nil
+	} else if out.IsFunction() {
+		return nil, stacktrace.NewErrorWithCode(types.ErrExecutorFailed, "Invalid output type is a function")
 	}
 
 	t, err := out.Export()

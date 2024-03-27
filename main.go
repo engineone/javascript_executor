@@ -1,5 +1,5 @@
 package main
 
-import "github.com/engineone/if_executor/executor"
+import "github.com/engineone/javascript_executor/executor"
 
-var Executor = executor.NewIfExecutor()
+var Executor = executor.NewJavascriptExecutor()

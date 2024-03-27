@@ -1,9 +1,9 @@
-module github.com/engineone/if_executor
+module github.com/engineone/javascript_executor
 
 go 1.22.1
 
 require (
-	github.com/engineone/types v0.0.0-20240327114303-80addbed64d3
+	github.com/engineone/types v0.0.0-20240327120609-aa4e199efdcc
 	github.com/engineone/utils v0.0.0-20240306191945-0018154ef051
 	github.com/go-playground/validator/v10 v10.19.0
 	github.com/onsi/ginkgo/v2 v2.16.0
